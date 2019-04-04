@@ -7,6 +7,10 @@ from glob import glob
 from sensor_msgs.msg import PointCloud2, PointField
 import std_msgs.msg
 import sensor_msgs.point_cloud2 as pcl2
+from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Point
+from gps_common.msg import GPSFix
+from sensor_msgs.msg import Imu
 
 import numpy as np
 import pickle
@@ -152,7 +156,7 @@ def network_inference_by_path(kitti_info, v_path, sampling, flip):
     
     return selected_points, boxes_corners, class_names
 
-def bounding_box(points, min_x=-np.inf, max_x=np.inf, min_y=-np.inf,
+def bounding_box_filter(points, min_x=-np.inf, max_x=np.inf, min_y=-np.inf,
                         max_y=np.inf, min_z=-np.inf, max_z=np.inf):
     """ Compute a bounding_box filter on the given points
 
@@ -185,21 +189,66 @@ def bounding_box(points, min_x=-np.inf, max_x=np.inf, min_y=-np.inf,
 
     return bb_filter
 
-# car_lidar_file_paths = '/media/dongwonshin/Ubuntu Data/Datasets/KITTI/2011_10_03/2011_10_03_drive_0047_sync/velodyne_points/data/*.bin'
-# ped_lidar_file_paths = '/media/dongwonshin/Ubuntu Data/Datasets/KITTI/2011_09_28/2011_09_28_drive_0039_sync/velodyne_points/data/*.bin'
-# res_lidar_file_paths = '/media/dongwonshin/Ubuntu Data/Datasets/KITTI/2011_09_30/2011_09_30_drive_0033_sync/velodyne_points/data/*.bin'
-lidar_seq_id = '2011_10_03_drive_0042'
-lidar_file_path = '/media/dongwonshin/Ubuntu Data/Datasets/KITTI/%s/%s_sync/velodyne_points/data/*.bin' % (lidar_seq_id[0:10], lidar_seq_id)
-lidar_file_paths = sorted(glob(lidar_file_path))
 
-info_path = '/home/dongwonshin/Desktop/second.pytorch_multiclass/data/kitti_infos_train.pkl'
-config_path = Path('/home/dongwonshin/Desktop/second.pytorch_multiclass/second/configs/all.fhd.config')
-ckpt_path = Path('/home/dongwonshin/Desktop/second.pytorch_multiclass/pretrained_models/original_model/voxelnet-74240.tckpt')
+def make_bbox_lines(bounding_box_points, x_max, x_min, y_max, y_min, z_max, z_min):
+
+    bounding_box_points.append([x_max,y_max,z_max])
+    bounding_box_points.append([x_max,y_min,z_max])
+    bounding_box_points.append([x_max,y_max,z_min])
+    bounding_box_points.append([x_max,y_min,z_min])
+    bounding_box_points.append([x_min,y_max,z_max])
+    bounding_box_points.append([x_min,y_min,z_max])
+    bounding_box_points.append([x_min,y_max,z_min])
+    bounding_box_points.append([x_min,y_min,z_min])
+
+    bounding_box_points.append([x_max,y_max,z_max])
+    bounding_box_points.append([x_max,y_max,z_min])
+    bounding_box_points.append([x_min,y_max,z_max])
+    bounding_box_points.append([x_min,y_max,z_min])
+    bounding_box_points.append([x_min,y_min,z_max])
+    bounding_box_points.append([x_min,y_min,z_min])
+    bounding_box_points.append([x_max,y_min,z_max])
+    bounding_box_points.append([x_max,y_min,z_min])
+
+    bounding_box_points.append([x_max,y_max,z_max])
+    bounding_box_points.append([x_min,y_max,z_max])
+    bounding_box_points.append([x_max,y_min,z_max])
+    bounding_box_points.append([x_min,y_min,z_max])
+    bounding_box_points.append([x_max,y_max,z_min])
+    bounding_box_points.append([x_min,y_max,z_min])
+    bounding_box_points.append([x_max,y_min,z_min])
+    bounding_box_points.append([x_min,y_min,z_min])
+
+    return bounding_box_points
+
+def euler_to_quaternion(roll, pitch, yaw):
+
+    qx = np.sin(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) - np.cos(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
+    qy = np.cos(roll/2) * np.sin(pitch/2) * np.cos(yaw/2) + np.sin(roll/2) * np.cos(pitch/2) * np.sin(yaw/2)
+    qz = np.cos(roll/2) * np.cos(pitch/2) * np.sin(yaw/2) - np.sin(roll/2) * np.sin(pitch/2) * np.cos(yaw/2)
+    qw = np.cos(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) + np.sin(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
+
+    return [qx, qy, qz, qw]
+
+# Configures
+lidar_seq_id = '2011_09_30_drive_0018'
+lidar_file_path = '/KITTI/%s/%s_sync/velodyne_points/data/*.bin' % (lidar_seq_id[0:10], lidar_seq_id)
+lidar_file_paths = sorted(glob(lidar_file_path))
+gps_imu_file_path = '/KITTI/%s/%s_sync/oxts/data/*.txt' % (lidar_seq_id[0:10], lidar_seq_id)
+gps_imu_file_paths = sorted(glob(gps_imu_file_path))
+
+info_path = '/workspace/data/kitti_infos_train.pkl'
+config_path = Path('/workspace/SECOND-ROS/second/configs/all.fhd.config')
+ckpt_path = Path('/workspace/pretrained_models/original_model/voxelnet-74240.tckpt')
 
 os.environ["CUDA_VISIBLE_DEVICES"]="1"
-publish_topic_name = '/inference_results'
+labeled_pointcloud_topic_name = '/inference_results'
+boudning_box_topic_name = '/bbox_results'
+gps_topic_name = '/gps'
+imu_topic_name = '/imu'
 lidar_frame_step = 1
 point_sampling_step = 1
+
 
 if __name__ == '__main__':
 
@@ -212,18 +261,34 @@ if __name__ == '__main__':
 
     # publisher init
     rospy.init_node('SECOND network pub_example')
-    pcl_pub = rospy.Publisher(publish_topic_name, PointCloud2)
+    labeled_pointcloud_pub = rospy.Publisher(labeled_pointcloud_topic_name, PointCloud2)
+    bounding_box_pub = rospy.Publisher(boudning_box_topic_name, Marker)
+    gps_pub = rospy.Publisher(gps_topic_name, GPSFix)
+    imu_pub = rospy.Publisher(imu_topic_name, Imu)
+
     rospy.sleep(1.)
     rate = rospy.Rate(3)
 
-    # for lidar_file_path in lidar_file_paths[1::lidar_frame_step]:
     idx = 0
     while not rospy.is_shutdown():
 
         all_points = []
+        all_bounding_box_points = []
+        marker = Marker()
+        marker.header.frame_id = '/map'
+        marker.header.stamp = rospy.Time.now()
+        marker.type = marker.LINE_LIST
+        marker.scale.x = 0.1
+        marker.color.r = 0.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        marker.color.a = 0.5
+
         for flip in [True, False]:            
             points, boxes_corners, class_names = network_inference_by_path(kitti_infos[0], lidar_file_paths[idx], point_sampling_step, flip)
 
+            
+            bounding_box_points = []
             labels = np.zeros(points.shape[0])
             for boxes_corner, class_name in zip(boxes_corners, class_names):
                 x_max = np.max(boxes_corner[:,0])
@@ -233,39 +298,75 @@ if __name__ == '__main__':
                 z_max = np.max(boxes_corner[:,2])
                 z_min = np.min(boxes_corner[:,2])
 
-                if class_name == 'Pedestrian':
-                    labels = labels + 1*bounding_box(points, x_min, x_max, y_min, y_max, z_min, z_max)
-                elif class_name == 'Cyclist':
-                    labels = labels + 2*bounding_box(points, x_min, x_max, y_min, y_max, z_min, z_max)
-                elif class_name == 'Car':
-                    labels = labels + 3*bounding_box(points, x_min, x_max, y_min, y_max, z_min, z_max)
-                elif class_name == 'Van':
-                    labels = labels + 4*bounding_box(points, x_min, x_max, y_min, y_max, z_min, z_max)
+                bounding_box_points = make_bbox_lines(bounding_box_points, x_max, x_min, y_max, y_min, z_max, z_min)
 
+
+                if class_name == 'Pedestrian':
+                    labels = labels + 1*bounding_box_filter(points, x_min, x_max, y_min, y_max, z_min, z_max)
+                elif class_name == 'Cyclist':
+                    labels = labels + 2*bounding_box_filter(points, x_min, x_max, y_min, y_max, z_min, z_max)
+                elif class_name == 'Car':
+                    labels = labels + 3*bounding_box_filter(points, x_min, x_max, y_min, y_max, z_min, z_max)
+                elif class_name == 'Van':
+                    labels = labels + 4*bounding_box_filter(points, x_min, x_max, y_min, y_max, z_min, z_max)
 
             for i, label in enumerate(labels):
                 points[i,3] = label
             
             if flip:
                 points[:,0:3] = np.dot(points[:,0:3], np.array([[-1,0,0],[0,-1,0],[0,0,1]]))
+                if len(boxes_corners) != 0:
+                    bounding_box_points = np.dot(np.asarray(bounding_box_points), np.array([[-1,0,0],[0,-1,0],[0,0,1]]))
+            
             all_points.append(points)
-        
+            if len(boxes_corners) != 0:
+                all_bounding_box_points.append(bounding_box_points)
+
         all_points = np.vstack(all_points)
+        if len(boxes_corners) != 0:
+            all_bounding_box_points = np.vstack(all_bounding_box_points)
+            for bounding_box_point in all_bounding_box_points:
+                marker.points.append(Point(bounding_box_point[0],bounding_box_point[1],bounding_box_point[2]))
 
         #header
         header = std_msgs.msg.Header()
         header.stamp = rospy.Time.now()
-        header.frame_id = 'map'
+        header.frame_id = '/map'
         
         #create pcl from points
         fields = [PointField('x', 0, PointField.FLOAT32, 1),
-                PointField('y', 4, PointField.FLOAT32, 1),
-                PointField('z', 8, PointField.FLOAT32, 1),
-                PointField('intensity', 12, PointField.FLOAT32, 1),
+                  PointField('y', 4, PointField.FLOAT32, 1),
+                  PointField('z', 8, PointField.FLOAT32, 1),
+                  PointField('intensity', 12, PointField.FLOAT32, 1),
                 # PointField('rgba', 12, PointField.UINT32, 1),
-                ]
+                 ]
         scaled_polygon_pcl = pcl2.create_cloud(header, fields, all_points)
-        pcl_pub.publish(scaled_polygon_pcl)
+        labeled_pointcloud_pub.publish(scaled_polygon_pcl)
+        bounding_box_pub.publish(marker)
+
+        # gps/imu topic gen
+        with open(gps_imu_file_paths[idx], 'rt') as fp:
+            line = fp.readline().split(' ')
+            quat_val = euler_to_quaternion(float(line[3]),float(line[4]),float(line[5]))
+
+            navsat = GPSFix()
+            navsat.header.frame_id = '/map'
+            navsat.header.stamp = rospy.Time.now()
+            navsat.latitude = float(line[0])
+            navsat.longitude = float(line[1])
+            navsat.altitude = float(line[2])
+            gps_pub.publish(navsat)
+
+            imu = Imu()
+            imu.header.frame_id = '/map'
+            imu.header.stamp = rospy.Time.now()
+            imu.orientation.x = quat_val[0]
+            imu.orientation.y = quat_val[1]
+            imu.orientation.z = quat_val[2]
+            imu.orientation.w = quat_val[3]
+            imu_pub.publish(imu)
+
+
         rate.sleep()
 
         print('[%d / %d]' % (idx, len(lidar_file_paths)))
